@@ -184,5 +184,5 @@ def play_video(path):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    video_path = r".\\hyperFocus\\assets\\How to Speak So That People Want to Listen _ Julian Treasure _ TED.mp4"
+    video_path = r".\\hyperFocus\\assets\\How to Speak So That People Want to Listen _ Julian Treasure _ TED_short.mp4"
     play_video(video_path)
