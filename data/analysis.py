@@ -118,7 +118,7 @@ def print_stats(stats):
 def main():
     try:
         # Get the filename from the command line
-        filename = "./muse_recording_20250612_204817.csv"
+        filename = "./concentration_test_1.csv"
         
         # Example 1: Analyze entire recording
         print("\nAnalyzing entire recording:")
@@ -141,7 +141,7 @@ def main():
 
         # Example 3: Analyze every 30 seconds window
         for start_time in range(0, 120, 30):
-            print("\nAnalyzing 30-second window starting at 00:00:")
+            print(f"\nAnalyzing 30-second window starting at {start_time}:")
             stats_window = analyze_muse_recording(filename, start_time=start_time, duration_seconds=30)
             if stats_window:
                 print_stats(stats_window)
