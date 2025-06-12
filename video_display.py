@@ -9,7 +9,7 @@ green_button_rect = (0, 0, 0, 0)
 speed_up_button_rect = (0, 0, 0, 0)
 speed_down_button_rect = (0, 0, 0, 0)
 
-active_segment = None  # (start_frame, color)
+active_segment = (0, (0, 255, 0))
 segments = []  # List of (start_frame, end_frame, color)
 
 video_fps = 30
@@ -77,6 +77,45 @@ def draw_buttons(frame):
     x1, y1, x2, y2 = speed_up_button_rect
     cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 80, 80), -1)
     cv2.putText(frame, '+', (x1 + 10, y2 - 12), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+def summarize_usage():
+    global segments, active_segment
+
+    if active_segment is not None:
+        segments.append((active_segment[0], video_frame_count, active_segment[1]))
+
+def show_summary_screen():
+    total_frames = video_frame_count
+    green_frames = sum((end - start) for start, end, color in segments if color == (0, 255, 0))
+    red_frames = sum((end - start) for start, end, color in segments if color == (0, 0, 255))
+
+    green_percent = (green_frames / total_frames) * 100
+    red_percent = (red_frames / total_frames) * 100
+
+    width, height = 600, 400
+    summary_img = np.ones((height, width, 3), dtype=np.uint8) * 255
+
+    # Title
+    cv2.putText(summary_img, "SESSION SUMMARY", (width // 2 - 170, 50),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (50, 50, 50), 3)
+
+    # Green Label + Bar
+    cv2.putText(summary_img, f"Green ({green_percent:.1f}%)", (50, 150),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    cv2.rectangle(summary_img, (50, 170), (50 + int(green_percent * 4), 200), (0, 255, 0), -1)
+
+    # Red Label + Bar
+    cv2.putText(summary_img, f"Red   ({red_percent:.1f}%)", (50, 250),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+    cv2.rectangle(summary_img, (50, 270), (50 + int(red_percent * 4), 300), (0, 0, 255), -1)
+
+    # Legend Info (Optional)
+    cv2.putText(summary_img, "Press any key to close", (width // 2 - 120, height - 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 100, 100), 1)
+
+    cv2.imshow("Summary", summary_img)
+    cv2.waitKey(0)
+
 
 def draw_progress_bar(frame, current_frame):
     bar_height = 30
@@ -181,6 +220,8 @@ def play_video(path):
             break
 
     cap.release()
+    summarize_usage()
+    show_summary_screen()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
