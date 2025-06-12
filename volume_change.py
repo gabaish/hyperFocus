@@ -21,12 +21,39 @@ def get_current_volume():
     return volume.GetMasterVolumeLevelScalar()
 
 def volume_boost():
-    comtypes.CoInitialize()  # <-- add this line
-    current = get_current_volume()
-    set_volume(current+0.2)  # Max volume
-    time.sleep(3)
-    set_volume(current)
-    comtypes.CoUninitialize()  # <-- optional, for cleanup
+    comtypes.CoInitialize()
+    original_volume = get_current_volume()
+    peak_volume = min(original_volume + 0.3, 1.0)  # Don't go above 1.0
+    steps = 10  # Number of steps to rise/fall
+    pause = 0.1  # Time between steps in seconds
+
+    # Go up
+    for i in range(1, steps + 1):
+        level = original_volume + (peak_volume - original_volume) * (i / steps)
+        set_volume(level)
+        time.sleep(pause)
+
+    # Go down
+    for i in range(1, steps + 1):
+        level = peak_volume - (peak_volume - original_volume) * (i / steps)
+        set_volume(level)
+        time.sleep(pause)
+
+    # Repeat two more times
+    for _ in range(2):
+        for i in range(1, steps + 1):
+            level = original_volume + (peak_volume - original_volume) * (i / steps)
+            set_volume(level)
+            time.sleep(pause)
+        for i in range(1, steps + 1):
+            level = peak_volume - (peak_volume - original_volume) * (i / steps)
+            set_volume(level)
+            time.sleep(pause)
+
+    # Restore original volume
+    set_volume(original_volume)
+
+
 
 # GUI
 root = tk.Tk()
