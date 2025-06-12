@@ -5,6 +5,7 @@ from brainflow.data_filter import DataFilter, FilterTypes, DetrendOperations
 import matplotlib.pyplot as plt
 import pandas as pd
 import threading
+from collections import deque
 
 def calculate_band_power(buffer):
     """Calculate the power of a frequency band using RMS"""
@@ -112,9 +113,58 @@ def get_channel_means(df):
     }
     return means
 
+def sliding_window_analysis(data_buffer, thresholds, window_size=10, sample_rate=256):
+    """
+    Analyze the sliding window for concentration drops.
+    Args:
+        data_buffer: Deque containing (timestamp, ratio1, ratio2) tuples
+        thresholds: Dictionary with threshold values
+        window_size: Window size in seconds
+        sample_rate: Sample rate in Hz
+    Returns:
+        dict: Analysis results with concentration status and details
+    """
+    if len(data_buffer) < window_size * sample_rate * 0.1:  # Need at least 10% of window
+        return {'concentration_drop': False, 'details': 'Insufficient data'}
+    
+    # Get the last window_size seconds of data
+    window_samples = int(window_size * sample_rate * 0.1)  # Assuming 10Hz ratio calculation
+    recent_data = list(data_buffer)[-window_samples:]
+    
+    if len(recent_data) == 0:
+        return {'concentration_drop': False, 'details': 'No recent data'}
+    
+    # Calculate means for the window
+    ratio1_values = [item[1] for item in recent_data]
+    ratio2_values = [item[2] for item in recent_data]
+    
+    window_mean_ratio1 = np.mean(ratio1_values)
+    window_mean_ratio2 = np.mean(ratio2_values)
+    
+    # Check if either ratio is below threshold
+    ratio1_drop = window_mean_ratio1 < thresholds['beta_theta_ratio']
+    ratio2_drop = window_mean_ratio2 < thresholds['beta_alpha_theta_ratio']
+    
+    concentration_drop = ratio1_drop or ratio2_drop
+    
+    details = {
+        'window_mean_ratio1': window_mean_ratio1,
+        'window_mean_ratio2': window_mean_ratio2,
+        'ratio1_threshold': thresholds['beta_theta_ratio'],
+        'ratio2_threshold': thresholds['beta_alpha_theta_ratio'],
+        'ratio1_drop': ratio1_drop,
+        'ratio2_drop': ratio2_drop,
+        'window_samples': len(recent_data)
+    }
+    
+    return {
+        'concentration_drop': concentration_drop,
+        'details': details
+    }
+
 def main(record_duration=30, record_start_time=2, continue_plotting=True):
     """
-    Main function with simultaneous recording and plotting.
+    Main function with simultaneous recording, plotting, and sliding window analysis.
     Args:
         record_duration (float): Duration in seconds to record data
         record_start_time (float): Time in seconds from program start to begin recording
@@ -130,27 +180,43 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
     ratio2_buffer = np.zeros(buffer_len)
 
     plt.ion()
-    fig, ax = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
-    fig.suptitle('Muse EEG Ratio Channels (Live Plot)', fontsize=16)
+    fig, ax = plt.subplots(1, 1, figsize=(12, 4))  # Single plot for better performance
+    fig.suptitle('Muse EEG Beta/Theta Ratio with Concentration Monitoring', fontsize=16)
 
-    line1, = ax[0].plot(times, ratio1_buffer, label='Beta/Theta Ratio')
-    line2, = ax[1].plot(times, ratio2_buffer, label='Beta/(Alpha+Theta) Ratio')
-
-    for a in ax:
-        a.grid(True)
-        a.set_ylabel('Ratio')
-        a.legend(loc='upper right')
-    ax[1].set_xlabel('Time (s)')
+    # Main ratio plot (only Beta/Theta for performance)
+    line1, = ax.plot(times, ratio1_buffer, label='Beta/Theta Ratio', color='blue')
+    
+    # Pre-allocate threshold line (more efficient than removing/adding)
+    threshold_line1, = ax.plot([], [], color='red', linestyle='--', alpha=0.7, label='Threshold')
+    
+    # Set up plot formatting
+    ax.set_ylabel('Beta/Theta Ratio')
+    ax.set_xlabel('Time (s)')
+    ax.grid(True)
+    ax.legend(loc='upper right')
+    
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
     # Shared data between threads
     recorded_data = []
     recording_complete = threading.Event()
     recording_means = None
+    thresholds = None
+    
+    # Sliding window data
+    sliding_window_data = deque(maxlen=2560)  # 10 seconds at 256Hz
+    concentration_status = 0  # 0 = normal, 1 = drop
+    last_analysis_time = 0
+    last_plot_update_time = 0
+    
+    # Performance optimization flags - MUCH less frequent updates
+    plot_update_interval = 0.5  # Update plot every 500ms instead of 100ms
+    analysis_interval = 5.0     # Analysis every 5 seconds
+    background_color_changed = False
     
     def record_data():
         """Thread function to record data"""
-        nonlocal recorded_data, recording_means
+        nonlocal recorded_data, recording_means, thresholds
         print(f"Recording {record_duration} seconds of data (starting at {record_start_time}s)...")
         
         # Wait until start time
@@ -184,40 +250,72 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
             print(f"Total samples recorded: {len(df)}")
 
             thresholds = {
-                'beta_theta_ratio' : recording_means['beta_theta_ratio'] * 0.7,
-                'beta_alpha_theta_ratio' : recording_means['beta_alpha_theta_ratio'] * 0.7
+                'beta_theta_ratio': recording_means['beta_theta_ratio'] * 0.7,
+                'beta_alpha_theta_ratio': recording_means['beta_alpha_theta_ratio'] * 0.7
             }
             print(f"Thresholds: {thresholds}")
+            
+            # Update threshold line once when calculated
+            if thresholds is not None:
+                threshold_line1.set_data([times[0], times[-1]], [thresholds['beta_theta_ratio'], thresholds['beta_theta_ratio']])
 
     # Start recording thread if duration > 0
     if record_duration > 0:
         record_thread = threading.Thread(target=record_data)
         record_thread.start()
     
-    # Live plotting
-    update_every = 10
-    counter = 0
+    # Live plotting with sliding window analysis
     gen = stream_muse_ratios(verbose=False)
     
     try:
         for ratio1, ratio2 in gen:
-            # Roll buffers and update
+            current_time = time.time()
+            
+            # Add data to sliding window
+            sliding_window_data.append((current_time, ratio1, ratio2))
+            
+            # Roll buffers and update (only for the plot we're showing)
             ratio1_buffer = np.roll(ratio1_buffer, -1)
-            ratio2_buffer = np.roll(ratio2_buffer, -1)
             ratio1_buffer[-1] = ratio1
-            ratio2_buffer[-1] = ratio2
             
-            # Update plot lines
+            # Update plot line (lightweight operation)
             line1.set_ydata(ratio1_buffer)
-            line2.set_ydata(ratio2_buffer)
             
-            counter += 1
-            if counter % update_every == 0:
-                for a in ax:
-                    a.relim()
-                    a.autoscale_view(scaley=True, scalex=False)
+            # Sliding window analysis (heavy operation - only every 5 seconds)
+            if current_time - last_analysis_time >= analysis_interval and thresholds is not None:
+                analysis_result = sliding_window_analysis(sliding_window_data, thresholds)
+                
+                if analysis_result['concentration_drop']:
+                    concentration_status = 1
+                    details = analysis_result['details']
+                    print(f"\n🚨 CONCENTRATION DROP DETECTED at {current_time:.1f}s")
+                    print(f"   Beta/Theta: {details['window_mean_ratio1']:.4f} (threshold: {details['ratio1_threshold']:.4f})")
+                    print(f"   Beta/(Alpha+Theta): {details['window_mean_ratio2']:.4f} (threshold: {details['ratio2_threshold']:.4f})")
+                    print(f"   Ratio1 drop: {details['ratio1_drop']}, Ratio2 drop: {details['ratio2_drop']}")
+                    
+                    # Visual feedback: Red background (only if not already changed)
+                    if not background_color_changed:
+                        ax.set_facecolor('lightcoral')
+                        background_color_changed = True
+                else:
+                    concentration_status = 0
+                    # Reset background color (only if it was changed)
+                    if background_color_changed:
+                        ax.set_facecolor('white')
+                        background_color_changed = False
+                
+                last_analysis_time = current_time
+            
+            # Heavy plot updates only every 500ms (much less frequent)
+            if current_time - last_plot_update_time >= plot_update_interval:
+                # Only do autoscaling occasionally to improve performance
+                ax.relim()
+                ax.autoscale_view(scaley=True, scalex=False)
+                
+                # Flush events less frequently
                 fig.canvas.draw()
                 fig.canvas.flush_events()
+                last_plot_update_time = current_time
             
             # Check if recording is complete and we should stop
             if recording_complete.is_set() and not continue_plotting:
