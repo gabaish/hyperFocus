@@ -16,6 +16,7 @@ import matplotlib
 matplotlib.use('TkAgg')  # Force TkAgg backend
 import matplotlib.pyplot as plt
 from pylsl import StreamInlet, resolve_byprop
+import time
 
 from brainflow.data_filter import DataFilter, FilterTypes, DetrendOperations
 
@@ -96,7 +97,10 @@ def main():
         print("✅ Starting to plot data...")
         print("Press Ctrl+C to stop")
         
+        update_every = 10
+        counter = 0
         while True:
+            start = time.time()
             try:
                 # Get data from the inlet
                 sample, timestamp = inlet.pull_sample(timeout=0.1)
@@ -155,8 +159,10 @@ def main():
                         print(f"Filtering error on band {BAND_NAMES[idx]}: {filter_error}")
                     
                     # Update the figure
-                    fig.canvas.draw()
-                    fig.canvas.flush_events()
+                    counter += 1
+                    if counter % update_every == 0:
+                        fig.canvas.draw()
+                        fig.canvas.flush_events()
                 else:
                     print("No data received - Check connection", end='\r')
                     plt.pause(0.1)
@@ -164,6 +170,7 @@ def main():
             except Exception as e:
                 print(f"Error during streaming: {e}")
                 plt.pause(0.1)
+            print("Loop time:", time.time() - start)
                     
     except KeyboardInterrupt:
         print("\n✋ Stopped by user")

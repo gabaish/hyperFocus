@@ -30,16 +30,16 @@ def analyze_muse_recording(filename, start_time=None, duration_seconds=None):
         df = pd.read_csv(full_path)
         
         # Check if required columns exist
-        required_columns = ['beta_theta_ratio', 'beta_alpha_theta_ratio', 'timestamp']
+        required_columns = ['beta_theta_ratio', 'beta_alpha_theta_ratio', 'lsl_timestamp']
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
 
-        # Convert timestamp column to float timestamps
-        df['timestamp'] = df['timestamp'].astype(float)
+        # Convert lsl_timestamp column to float timestamps
+        df['lsl_timestamp'] = df['lsl_timestamp'].astype(float)
         
         # Get the start timestamp (first row)
-        initial_timestamp = df['timestamp'].iloc[0]
+        initial_timestamp = df['lsl_timestamp'].iloc[0]
         
         # Apply time window filtering if specified
         if start_time is not None and duration_seconds is not None:
@@ -55,10 +55,13 @@ def analyze_muse_recording(filename, start_time=None, duration_seconds=None):
             target_end = target_start + duration_seconds
             
             # Filter dataframe based on timestamps
-            df = df[(df['timestamp'] >= target_start) & (df['timestamp'] < target_end)]
+            df = df[(df['lsl_timestamp'] >= target_start) & (df['lsl_timestamp'] < target_end)]
 
         if df.empty:
             raise ValueError("No data points found in the specified time window")
+        
+        # Calculate total time for the entire file
+        total_time = df['lsl_timestamp'].max() - df['lsl_timestamp'].min() if not df.empty else 0
         
         # Calculate statistics for both ratios
         stats = {
@@ -77,11 +80,12 @@ def analyze_muse_recording(filename, start_time=None, duration_seconds=None):
                 'max': df['beta_alpha_theta_ratio'].max()
             },
             'time_window': {
-                'start': df['timestamp'].min(),
-                'end': df['timestamp'].max(),
-                'duration': df['timestamp'].max() - df['timestamp'].min(),
+                'start': df['lsl_timestamp'].min(),
+                'end': df['lsl_timestamp'].max(),
+                'duration': df['lsl_timestamp'].max() - df['lsl_timestamp'].min(),
                 'n_samples': len(df)
-            }
+            },
+            'total_time': total_time
         }
         
         return stats
@@ -107,9 +111,13 @@ def print_stats(stats):
         print(f"Duration: {tw['duration']:.2f} seconds")
         print(f"Samples: {tw['n_samples']}")
     
+    # Print total time
+    if 'total_time' in stats:
+        print(f"\nTotal time in file: {stats['total_time']:.2f} seconds")
+    
     # Print ratio statistics
     for ratio_name, ratio_stats in stats.items():
-        if ratio_name != 'time_window':  # Skip time window info here
+        if ratio_name != 'time_window' and ratio_name != 'total_time':  # Skip time window and total time info here
             print(f"\n{ratio_name.replace('_', '/')}:")
             print("-" * 30)
             for stat_name, value in ratio_stats.items():
@@ -118,7 +126,7 @@ def print_stats(stats):
 def main():
     try:
         # Get the filename from the command line
-        filename = "./concentration_test_1.csv"
+        filename = "./time_test_1.csv"
         
         # Example 1: Analyze entire recording
         print("\nAnalyzing entire recording:")

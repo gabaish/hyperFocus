@@ -6,9 +6,7 @@ Records beta/theta and beta/(alpha+theta) ratios from Muse EEG headband.
 First run 'muselsl stream' in another terminal, then run this script.
 """
 
-from collections import deque
 import numpy as np
-import time
 import csv
 from datetime import datetime
 from pylsl import StreamInlet, resolve_byprop
@@ -59,7 +57,7 @@ def main():
         
         with open(filename, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(['timestamp', 'beta_theta_ratio', 'beta_alpha_theta_ratio'])
+            writer.writerow(['lsl_timestamp', 'iso_timestamp', 'beta_theta_ratio', 'beta_alpha_theta_ratio'])
             
             print(f"Recording data to {filename}")
             print("Press Ctrl+C to stop recording")
@@ -101,7 +99,8 @@ def main():
                     beta_alpha_theta_ratio = beta_power / (alpha_power + theta_power + 1e-10)
                     
                     # Write to CSV
-                    writer.writerow([timestamp, beta_theta_ratio, beta_alpha_theta_ratio])
+                    iso_timestamp = datetime.fromtimestamp(timestamp).isoformat()
+                    writer.writerow([timestamp, iso_timestamp, beta_theta_ratio, beta_alpha_theta_ratio])
                     csvfile.flush()  # Ensure data is written immediately
                     
                     # Print current values
