@@ -113,26 +113,37 @@ def get_channel_means(df):
     }
     return means
 
+def get_focus_status():
+    """
+    Get the current focus status from the global focus_status variable.
+    This function can be called from other parts of the application.
+    Returns:
+        str: Current focus status ('unknown', 'focused', 'out_of_focus', 'transitioning')
+    """
+    # This will be updated by the main function
+    global focus_status
+    return focus_status if 'focus_status' in globals() else 'unknown'
+
 def sliding_window_analysis(data_buffer, thresholds, window_size=10, sample_rate=256):
     """
-    Analyze the sliding window for concentration drops.
+    Analyze the sliding window for focus status changes.
     Args:
         data_buffer: Deque containing (timestamp, ratio1, ratio2) tuples
-        thresholds: Dictionary with threshold values
+        thresholds: Dictionary with threshold values including focus and unfocus thresholds
         window_size: Window size in seconds
         sample_rate: Sample rate in Hz
     Returns:
-        dict: Analysis results with concentration status and details
+        dict: Analysis results with focus status and details
     """
     if len(data_buffer) < window_size * sample_rate * 0.1:  # Need at least 10% of window
-        return {'concentration_drop': False, 'details': 'Insufficient data'}
+        return {'focus_status': 'unknown', 'details': 'Insufficient data'}
     
     # Get the last window_size seconds of data
     window_samples = int(window_size * sample_rate * 0.1)  # Assuming 10Hz ratio calculation
     recent_data = list(data_buffer)[-window_samples:]
     
     if len(recent_data) == 0:
-        return {'concentration_drop': False, 'details': 'No recent data'}
+        return {'focus_status': 'unknown', 'details': 'No recent data'}
     
     # Calculate means for the window
     ratio1_values = [item[1] for item in recent_data]
@@ -141,24 +152,39 @@ def sliding_window_analysis(data_buffer, thresholds, window_size=10, sample_rate
     window_mean_ratio1 = np.mean(ratio1_values)
     window_mean_ratio2 = np.mean(ratio2_values)
     
-    # Check if either ratio is below threshold
-    ratio1_drop = window_mean_ratio1 < thresholds['beta_theta_ratio']
-    ratio2_drop = window_mean_ratio2 < thresholds['beta_alpha_theta_ratio']
+    # Check focus status using both thresholds
+    # Out of focus: below baseline * 0.6
+    # Back to focus: above baseline * 0.85
+    ratio1_out_of_focus = window_mean_ratio1 < thresholds['beta_theta_ratio_unfocus']
+    ratio2_out_of_focus = window_mean_ratio2 < thresholds['beta_alpha_theta_ratio_unfocus']
     
-    concentration_drop = ratio1_drop or ratio2_drop
+    ratio1_back_to_focus = window_mean_ratio1 >= thresholds['beta_theta_ratio_focus']
+    ratio2_back_to_focus = window_mean_ratio2 >= thresholds['beta_alpha_theta_ratio_focus']
+    
+    # Determine focus status
+    if ratio1_out_of_focus or ratio2_out_of_focus:
+        focus_status = 'out_of_focus'
+    elif ratio1_back_to_focus and ratio2_back_to_focus:
+        focus_status = 'focused'
+    else:
+        focus_status = 'transitioning'  # Between thresholds
     
     details = {
         'window_mean_ratio1': window_mean_ratio1,
         'window_mean_ratio2': window_mean_ratio2,
-        'ratio1_threshold': thresholds['beta_theta_ratio'],
-        'ratio2_threshold': thresholds['beta_alpha_theta_ratio'],
-        'ratio1_drop': ratio1_drop,
-        'ratio2_drop': ratio2_drop,
+        'ratio1_unfocus_threshold': thresholds['beta_theta_ratio_unfocus'],
+        'ratio2_unfocus_threshold': thresholds['beta_alpha_theta_ratio_unfocus'],
+        'ratio1_focus_threshold': thresholds['beta_theta_ratio_focus'],
+        'ratio2_focus_threshold': thresholds['beta_alpha_theta_ratio_focus'],
+        'ratio1_out_of_focus': ratio1_out_of_focus,
+        'ratio2_out_of_focus': ratio2_out_of_focus,
+        'ratio1_back_to_focus': ratio1_back_to_focus,
+        'ratio2_back_to_focus': ratio2_back_to_focus,
         'window_samples': len(recent_data)
     }
     
     return {
-        'concentration_drop': concentration_drop,
+        'focus_status': focus_status,
         'details': details
     }
 
@@ -181,13 +207,14 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
 
     plt.ion()
     fig, ax = plt.subplots(1, 1, figsize=(12, 4))  # Single plot for better performance
-    fig.suptitle('Muse EEG Beta/Theta Ratio with Concentration Monitoring', fontsize=16)
+    fig.suptitle('Muse EEG Focus Monitoring - Beta/Theta Ratio with Dual Thresholds', fontsize=16)
 
     # Main ratio plot (only Beta/Theta for performance)
     line1, = ax.plot(times, ratio1_buffer, label='Beta/Theta Ratio', color='blue')
     
-    # Pre-allocate threshold line (more efficient than removing/adding)
-    threshold_line1, = ax.plot([], [], color='red', linestyle='--', alpha=0.7, label='Threshold')
+    # Pre-allocate threshold lines (more efficient than removing/adding)
+    threshold_line1, = ax.plot([], [], color='red', linestyle='--', alpha=0.7, label='Unfocus Threshold (0.6x)')
+    threshold_line2, = ax.plot([], [], color='green', linestyle='--', alpha=0.7, label='Focus Threshold (0.85x)')
     
     # Set up plot formatting
     ax.set_ylabel('Beta/Theta Ratio')
@@ -205,7 +232,8 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
     
     # Sliding window data
     sliding_window_data = deque(maxlen=2560)  # 10 seconds at 256Hz
-    concentration_status = 0  # 0 = normal, 1 = drop
+    global focus_status
+    focus_status = 'unknown'  # 'unknown', 'focused', 'out_of_focus', 'transitioning'
     last_analysis_time = 0
     last_plot_update_time = 0
     
@@ -250,14 +278,18 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
             print(f"Total samples recorded: {len(df)}")
 
             thresholds = {
-                'beta_theta_ratio': recording_means['beta_theta_ratio'] * 0.7,
-                'beta_alpha_theta_ratio': recording_means['beta_alpha_theta_ratio'] * 0.7
+                'beta_theta_ratio_unfocus': recording_means['beta_theta_ratio'] * 0.6,
+                'beta_alpha_theta_ratio_unfocus': recording_means['beta_alpha_theta_ratio'] * 0.6,
+                'beta_theta_ratio_focus': recording_means['beta_theta_ratio'] * 0.85,
+                'beta_alpha_theta_ratio_focus': recording_means['beta_alpha_theta_ratio'] * 0.85
             }
-            print(f"Thresholds: {thresholds}")
+            print(f"Unfocus thresholds (0.6x): Beta/Theta: {thresholds['beta_theta_ratio_unfocus']:.4f}, Beta/(Alpha+Theta): {thresholds['beta_alpha_theta_ratio_unfocus']:.4f}")
+            print(f"Focus thresholds (0.85x): Beta/Theta: {thresholds['beta_theta_ratio_focus']:.4f}, Beta/(Alpha+Theta): {thresholds['beta_alpha_theta_ratio_focus']:.4f}")
             
-            # Update threshold line once when calculated
+            # Update threshold lines once when calculated
             if thresholds is not None:
-                threshold_line1.set_data([times[0], times[-1]], [thresholds['beta_theta_ratio'], thresholds['beta_theta_ratio']])
+                threshold_line1.set_data([times[0], times[-1]], [thresholds['beta_theta_ratio_unfocus'], thresholds['beta_theta_ratio_unfocus']])
+                threshold_line2.set_data([times[0], times[-1]], [thresholds['beta_theta_ratio_focus'], thresholds['beta_theta_ratio_focus']])
 
     # Start recording thread if duration > 0
     if record_duration > 0:
@@ -284,27 +316,55 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
             # Sliding window analysis (heavy operation - only every 5 seconds)
             if current_time - last_analysis_time >= analysis_interval and thresholds is not None:
                 analysis_result = sliding_window_analysis(sliding_window_data, thresholds)
+                new_focus_status = analysis_result['focus_status']
                 
-                if analysis_result['concentration_drop']:
-                    concentration_status = 1
-                    details = analysis_result['details']
-                    print(f"\n🚨 CONCENTRATION DROP DETECTED at {current_time:.1f}s")
-                    print(f"   Beta/Theta: {details['window_mean_ratio1']:.4f} (threshold: {details['ratio1_threshold']:.4f})")
-                    print(f"   Beta/(Alpha+Theta): {details['window_mean_ratio2']:.4f} (threshold: {details['ratio2_threshold']:.4f})")
-                    print(f"   Ratio1 drop: {details['ratio1_drop']}, Ratio2 drop: {details['ratio2_drop']}")
-                    
-                    # Visual feedback: Red background (only if not already changed)
-                    if not background_color_changed:
+                # Only print messages when status actually changes
+                if new_focus_status != focus_status:
+                    if new_focus_status == 'out_of_focus':
+                        focus_status = 'out_of_focus'
+                        details = analysis_result['details']
+                        print(f"\n🚨 OUT OF FOCUS DETECTED at {current_time:.1f}s")
+                        print(f"   Beta/Theta: {details['window_mean_ratio1']:.4f} (unfocus threshold: {details['ratio1_unfocus_threshold']:.4f})")
+                        print(f"   Beta/(Alpha+Theta): {details['window_mean_ratio2']:.4f} (unfocus threshold: {details['ratio2_unfocus_threshold']:.4f})")
+                        print(f"   Ratio1 out of focus: {details['ratio1_out_of_focus']}, Ratio2 out of focus: {details['ratio2_out_of_focus']}")
+                        
+                        # Visual feedback: Red background
                         ax.set_facecolor('lightcoral')
                         background_color_changed = True
-                else:
-                    concentration_status = 0
-                    # Reset background color (only if it was changed)
-                    if background_color_changed:
-                        ax.set_facecolor('white')
-                        background_color_changed = False
+                        
+                    elif new_focus_status == 'focused':
+                        focus_status = 'focused'
+                        details = analysis_result['details']
+                        print(f"\n✅ BACK TO FOCUS at {current_time:.1f}s")
+                        print(f"   Beta/Theta: {details['window_mean_ratio1']:.4f} (focus threshold: {details['ratio1_focus_threshold']:.4f})")
+                        print(f"   Beta/(Alpha+Theta): {details['window_mean_ratio2']:.4f} (focus threshold: {details['ratio2_focus_threshold']:.4f})")
+                        print(f"   Ratio1 back to focus: {details['ratio1_back_to_focus']}, Ratio2 back to focus: {details['ratio2_back_to_focus']}")
+                        
+                        # Visual feedback: Green background
+                        ax.set_facecolor('lightgreen')
+                        background_color_changed = True
+                        
+                    elif new_focus_status == 'transitioning':
+                        focus_status = 'transitioning'
+                        details = analysis_result['details']
+                        print(f"\n🔄 TRANSITIONING at {current_time:.1f}s")
+                        print(f"   Beta/Theta: {details['window_mean_ratio1']:.4f} (between thresholds)")
+                        print(f"   Beta/(Alpha+Theta): {details['window_mean_ratio2']:.4f} (between thresholds)")
+                        
+                        # Visual feedback: Yellow background
+                        ax.set_facecolor('lightyellow')
+                        background_color_changed = True
+                        
+                    elif new_focus_status == 'unknown':
+                        focus_status = 'unknown'
+                        print(f"\n❓ UNKNOWN FOCUS STATUS at {current_time:.1f}s - insufficient data")
+                        
+                        # Reset background color
+                        if background_color_changed:
+                            ax.set_facecolor('white')
+                            background_color_changed = False
                 
-                last_analysis_time = current_time
+                    last_analysis_time = current_time
             
             # Heavy plot updates only every 500ms (much less frequent)
             if current_time - last_plot_update_time >= plot_update_interval:
@@ -331,6 +391,26 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
         record_thread.join()
     
     return recording_means
+
+def start_focus_monitoring(record_duration=30, record_start_time=2, continue_plotting=True):
+    """
+    Start the focus monitoring system with the new dual-threshold approach.
+    
+    Args:
+        record_duration (float): Duration in seconds to record baseline data
+        record_start_time (float): Time in seconds from program start to begin recording
+        continue_plotting (bool): Whether to continue plotting after recording is complete
+    
+    Returns:
+        dict: Dictionary with baseline mean values for each channel, or None if no recording was done
+    
+    Focus Status Logic:
+    - If ratio drops below baseline * 0.6 -> 'out_of_focus'
+    - If ratio rises above baseline * 0.85 -> 'focused'
+    - If ratio is between thresholds -> 'transitioning'
+    - If insufficient data -> 'unknown'
+    """
+    return main(record_duration, record_start_time, continue_plotting)
 
 if __name__ == "__main__":
     main()
