@@ -35,28 +35,27 @@ def analyze_muse_recording(filename, start_time=None, duration_seconds=None):
         if missing_columns:
             raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
 
-        # Convert timestamp to datetime if it exists
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            
+        # Convert timestamp column to float timestamps
+        df['timestamp'] = df['timestamp'].astype(float)
+        
+        # Get the start timestamp (first row)
+        initial_timestamp = df['timestamp'].iloc[0]
+        
         # Apply time window filtering if specified
         if start_time is not None and duration_seconds is not None:
-            if ':' in str(start_time):  # If time format is HH:MM:SS
-                # Convert start_time to datetime
-                today = df['timestamp'].dt.date.iloc[0]  # Get date from first row
-                start_dt = datetime.strptime(start_time, '%H:%M:%S').replace(
-                    year=today.year, month=today.month, day=today.day
-                )
-                end_dt = start_dt + timedelta(seconds=duration_seconds)
-                
-                # Filter dataframe
-                df = df[(df['timestamp'] >= start_dt) & (df['timestamp'] < end_dt)]
-            else:  # If start_time is seconds from start
-                start_sec = float(start_time)
-                # Get the first timestamp as reference
-                start_time = df['timestamp'].iloc[0] + timedelta(seconds=start_sec)
-                end_time = start_time + timedelta(seconds=duration_seconds)
-                df = df[(df['timestamp'] >= start_time) & (df['timestamp'] < end_time)]
+            if isinstance(start_time, str) and ':' in start_time:  # If time format is HH:MM:SS
+                # Convert HH:MM:SS to seconds
+                h, m, s = map(float, start_time.split(':'))
+                start_seconds = h * 3600 + m * 60 + s
+            else:
+                start_seconds = float(start_time)
+            
+            # Calculate target timestamps
+            target_start = initial_timestamp + start_seconds
+            target_end = target_start + duration_seconds
+            
+            # Filter dataframe based on timestamps
+            df = df[(df['timestamp'] >= target_start) & (df['timestamp'] < target_end)]
 
         if df.empty:
             raise ValueError("No data points found in the specified time window")
@@ -80,7 +79,7 @@ def analyze_muse_recording(filename, start_time=None, duration_seconds=None):
             'time_window': {
                 'start': df['timestamp'].min(),
                 'end': df['timestamp'].max(),
-                'duration': (df['timestamp'].max() - df['timestamp'].min()).total_seconds(),
+                'duration': df['timestamp'].max() - df['timestamp'].min(),
                 'n_samples': len(df)
             }
         }
@@ -127,11 +126,26 @@ def main():
         if stats_full:
             print_stats(stats_full)
             
-        # Example 2: Analyze a 10-second window starting th start of the recording
+        # Example 2: Analyze a 10-second window starting at the start of the recording
         print("\nAnalyzing 10-second window starting at 00:00:")
         stats_window = analyze_muse_recording(filename, start_time=0, duration_seconds=10)
         if stats_window:
             print_stats(stats_window)
+
+        # Example 2: Analyze a 10-second window starting at 00:10:00
+        print("\nAnalyzing 10-second window starting at 00:10:00:")
+        stats_window = analyze_muse_recording(filename, start_time=10, duration_seconds=10)
+        if stats_window:
+            print_stats(stats_window)
+
+
+        # Example 3: Analyze every 30 seconds window
+        for start_time in range(0, 120, 30):
+            print("\nAnalyzing 30-second window starting at 00:00:")
+            stats_window = analyze_muse_recording(filename, start_time=start_time, duration_seconds=30)
+            if stats_window:
+                print_stats(stats_window)
+
                     
     except Exception as e:
         print(f"Error: {str(e)}")
