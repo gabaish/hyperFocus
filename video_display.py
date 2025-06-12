@@ -1,5 +1,10 @@
 import cv2
 import numpy as np
+import threading
+from playsound import playsound
+import pygame
+
+
 
 # Global variables
 paused = True
@@ -14,7 +19,7 @@ segments = []  # List of (start_frame, end_frame, color)
 
 video_fps = 30
 video_frame_count = 1
-playback_speed = 1.0
+# playback_speed = 1.0
 
 def draw_toggle_button(frame, paused):
     x1, y1, x2, y2 = play_button_rect
@@ -59,10 +64,10 @@ def draw_buttons(frame):
                        w - 3*btn_size - 3*spacing, h - 40)
     green_button_rect = (w - padding - 3*btn_size - 2*spacing, h - btn_size - 40,
                          w - 2*btn_size - 2*spacing, h - 40)
-    speed_down_button_rect = (w - padding - 2*btn_size - spacing, h - btn_size - 40,
-                              w - btn_size - spacing, h - 40)
-    speed_up_button_rect = (w - btn_size - padding, h - btn_size - 40,
-                            w - padding, h - 40)
+    # speed_down_button_rect = (w - padding - 2*btn_size - spacing, h - btn_size - 40,
+    #                           w - btn_size - spacing, h - 40)
+    # speed_up_button_rect = (w - btn_size - padding, h - btn_size - 40,
+    #                         w - padding, h - 40)
 
     for rect, color in [(red_button_rect, (0, 0, 255)), (green_button_rect, (0, 255, 0))]:
         cv2.rectangle(frame, rect[:2], rect[2:], (0, 0, 0), -1)
@@ -70,13 +75,13 @@ def draw_buttons(frame):
         cy = (rect[1] + rect[3]) // 2
         cv2.circle(frame, (cx, cy), 12, color, -1)
 
-    x1, y1, x2, y2 = speed_down_button_rect
-    cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 80, 80), -1)
-    cv2.putText(frame, '-', (x1 + 12, y2 - 12), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-
-    x1, y1, x2, y2 = speed_up_button_rect
-    cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 80, 80), -1)
-    cv2.putText(frame, '+', (x1 + 10, y2 - 12), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    # x1, y1, x2, y2 = speed_down_button_rect
+    # cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 80, 80), -1)
+    # cv2.putText(frame, '-', (x1 + 12, y2 - 12), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    #
+    # x1, y1, x2, y2 = speed_up_button_rect
+    # cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 80, 80), -1)
+    # cv2.putText(frame, '+', (x1 + 10, y2 - 12), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
 def summarize_usage():
     global segments, active_segment
@@ -148,6 +153,12 @@ def click_event(event, x, y, flags, param):
 
     if play_button_rect[0] <= x <= play_button_rect[2] and play_button_rect[1] <= y <= play_button_rect[3]:
         paused = not paused
+        if not paused:
+            position = current_frame / video_fps
+            pygame.mixer.music.stop()  # force fresh playback
+            pygame.mixer.music.play(start=position)
+        else:
+            pygame.mixer.music.pause()
         return
 
     if green_button_rect[0] <= x <= green_button_rect[2] and green_button_rect[1] <= y <= green_button_rect[3]:
@@ -166,13 +177,13 @@ def click_event(event, x, y, flags, param):
             active_segment = (current_frame, (0, 0, 255))
         return
 
-    if speed_down_button_rect[0] <= x <= speed_down_button_rect[2] and speed_down_button_rect[1] <= y <= speed_down_button_rect[3]:
-        playback_speed = max(0.25, playback_speed - 0.25)
-        return
-
-    if speed_up_button_rect[0] <= x <= speed_up_button_rect[2] and speed_up_button_rect[1] <= y <= speed_up_button_rect[3]:
-        playback_speed = min(4.0, playback_speed + 0.25)
-        return
+    # if speed_down_button_rect[0] <= x <= speed_down_button_rect[2] and speed_down_button_rect[1] <= y <= speed_down_button_rect[3]:
+    #     playback_speed = max(0.25, playback_speed - 0.25)
+    #     return
+    #
+    # if speed_up_button_rect[0] <= x <= speed_up_button_rect[2] and speed_up_button_rect[1] <= y <= speed_up_button_rect[3]:
+    #     playback_speed = min(4.0, playback_speed + 0.25)
+    #     return
 
 def play_video(path):
     global paused, video_fps, video_frame_count
@@ -209,12 +220,12 @@ def play_video(path):
         cv2.putText(display_frame, f"Red Time: {red_time:.1f}s", (250, frame.shape[0] - 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 200), 2)
 
-        cv2.putText(display_frame, f"Speed: {playback_speed:.2f}x", (display_frame.shape[1] - 160, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        # cv2.putText(display_frame, f"Speed: {playback_speed:.2f}x", (display_frame.shape[1] - 160, 30),
+        #             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
         cv2.imshow("Video Player", display_frame)
 
-        delay = max(1, int(1000 / (video_fps * playback_speed)))
+        delay = max(1, int(1000 / video_fps))
         key = cv2.waitKey(delay) & 0xFF
         if key == ord('q'):
             break
@@ -225,6 +236,10 @@ def play_video(path):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    video_path = "assets/How to Speak So That People Want to Listen _ Julian Treasure _ TED.mp4"
+    video_path = r".\\hyperFocus\\assets\\How to Speak So That People Want to Listen _ Julian Treasure _ TED_short.mp4"
+    audio_path = r".\\hyperFocus\\assets\\audio.mp3"
+
+    pygame.mixer.init()
+    pygame.mixer.music.load(audio_path)
 
     play_video(video_path)
