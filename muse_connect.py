@@ -9,8 +9,6 @@ Then run this script:
     python muse_connect.py
 """
 
-import sys
-import time
 from collections import deque
 
 import numpy as np
@@ -19,11 +17,15 @@ matplotlib.use('TkAgg')  # Force TkAgg backend
 import matplotlib.pyplot as plt
 from pylsl import StreamInlet, resolve_byprop
 
-from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
 from brainflow.data_filter import DataFilter, FilterTypes, DetrendOperations
 
-BAND_NAMES = ['Filtered (1-50 Hz)', 'Alpha (8-13 Hz)', 'Beta (13-30 Hz)', 'Theta (4-8 Hz)']
+BAND_NAMES = ['Filtered (1-50 Hz)', 'Alpha (8-13 Hz)', 'Beta (13-30 Hz)', 'Theta (4-8 Hz)', 'Beta/Theta Ratio', 'Beta/(Alpha+Theta) Ratio']
 BAND_RANGES = [(1, 50), (8, 13), (13, 30), (4, 8)]  # (low, high) frequency ranges in Hz
+
+def calculate_band_power(buffer):
+    """Calculate the power of a frequency band using RMS"""
+    return np.sqrt(np.mean(np.square(buffer)))
+
 
 def main():
     try:
@@ -51,8 +53,8 @@ def main():
 
         # Create figure
         plt.ion()  # Enable interactive mode
-        fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
-        fig.suptitle('Muse EEG Frequency Bands', fontsize=16)
+        fig, axes = plt.subplots(6, 1, figsize=(12, 15), sharex=True)
+        fig.suptitle('Muse EEG Frequency Bands and Attention Ratios', fontsize=16)
         print("Created plot window")
         
         # Initialize buffers
@@ -62,9 +64,10 @@ def main():
         
         # Initialize buffers for raw and each frequency band
         raw_buffer = np.zeros(samples)
-        band_buffers = [np.zeros(samples) for _ in range(4)]
+        band_buffers = [np.zeros(samples) for _ in range(4)]  # 4 basic bands
+        ratio_buffers = [np.zeros(samples) for _ in range(2)]  # 2 ratio bands
         
-        # Create plot lines for each band
+        # Create plot lines for each band and ratio
         lines = []
         
         for idx, (ax, name) in enumerate(zip(axes, BAND_NAMES)):
@@ -72,14 +75,17 @@ def main():
                 raw_line, = ax.plot(times, raw_buffer, 'b-', alpha=0.5, label='Raw')
                 band_line, = ax.plot(times, band_buffers[idx], 'r-', label='Filtered')
                 lines.append((raw_line, band_line))
-            else:  # Other plots show just the frequency band
+            elif idx < 4:  # Next plots show frequency bands
                 band_line, = ax.plot(times, band_buffers[idx], '-', label=name)
                 lines.append((None, band_line))
-            
+            else:  # Last two plots show ratios
+                ratio_line, = ax.plot(times, ratio_buffers[idx-4], '-', label=name)
+                lines.append((None, ratio_line))
+
             # Configure each subplot
-            ax.set_ylim(-100, 100)
+            ax.set_ylim(-100, 100) if idx < 4 else ax.set_ylim(0, 5)  # Different scale for ratios
             ax.grid(True)
-            ax.set_ylabel('(μV)')
+            ax.set_ylabel('μV' if idx < 4 else 'Ratio')
             ax.legend(loc='upper right')
             
         # Set common x-label
@@ -99,6 +105,9 @@ def main():
                     raw_buffer = np.roll(raw_buffer, -1)
                     for i in range(len(band_buffers)):
                         band_buffers[i] = np.roll(band_buffers[i], -1)
+                    for i in range(len(ratio_buffers)):
+                        ratio_buffers[i] = np.roll(ratio_buffers[i], -1)
+
                     
                     # Update raw data buffer with first channel (we'll just use TP9)
                     raw_buffer[-1] = sample[0]
@@ -119,13 +128,28 @@ def main():
                             
                             # Update band buffer
                             band_buffers[idx][-1] = data_to_filter[-1]
+
+                        # Calculate ratios using the most recent data
+                        # Beta/Theta ratio
+                        beta_power = calculate_band_power(band_buffers[2][-50:])  # Use last 50 samples
+                        theta_power = calculate_band_power(band_buffers[3][-50:])
+                        alpha_power = calculate_band_power(band_buffers[1][-50:])
+
+                        # Avoid division by zero
+                        ratio_buffers[0][-1] = beta_power / (theta_power + 1e-10)
+                        ratio_buffers[1][-1] = beta_power / (alpha_power + theta_power + 1e-10)
+
+
                             
-                            # Update plot lines
+                        # Update plot lines
+                        for idx in range(len(BAND_NAMES)):
                             if idx == 0:  # First plot shows both raw and filtered
                                 lines[idx][0].set_ydata(raw_buffer)
                                 lines[idx][1].set_ydata(band_buffers[idx])
-                            else:  # Other plots show just the band
+                            elif idx < 4:  # Frequency bands
                                 lines[idx][1].set_ydata(band_buffers[idx])
+                            else:  # Ratio plots
+                                lines[idx][1].set_ydata(ratio_buffers[idx-4])
                             
                     except Exception as filter_error:
                         print(f"Filtering error on band {BAND_NAMES[idx]}: {filter_error}")
@@ -153,4 +177,3 @@ def main():
 
 if __name__ == "__main__":
     main() 
-    
