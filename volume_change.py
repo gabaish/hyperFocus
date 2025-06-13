@@ -20,7 +20,7 @@ def get_current_volume():
 def volume_boost():
     comtypes.CoInitialize()
     original_volume = get_current_volume()
-    peak_volume = min(original_volume + 0.3, 1.0)
+    peak_volume = min(original_volume + 0.4, 1.0)
     steps = 10
     pause = 0.1
 

@@ -14,10 +14,8 @@ def calculate_band_power(buffer):
 
 def stream_muse_ratios(duration=5, verbose=True):
     """
-    Stream Muse EEG data and yield only the two ratio channels:
-    - Beta/Theta
-    - Beta/(Alpha+Theta)
-    Yields a tuple: (beta_theta_ratio, beta_alpha_theta_ratio)
+    Stream Muse EEG data and yield only the beta/theta ratio.
+    Yields a single value: beta_theta_ratio
     """
     # Look for an EEG stream
     if verbose:
@@ -31,8 +29,8 @@ def stream_muse_ratios(duration=5, verbose=True):
     srate = float(streams[0].nominal_srate())
     samples = int(duration * srate)
     raw_buffer = np.zeros(samples)
-    band_buffers = [np.zeros(samples) for _ in range(4)]  # 4 basic bands: Filtered, Alpha, Beta, Theta
-    BAND_RANGES = [(1, 50), (8, 13), (13, 30), (4, 8)]
+    band_buffers = [np.zeros(samples) for _ in range(3)]  # 3 basic bands: Filtered, Beta, Theta
+    BAND_RANGES = [(1, 50), (13, 30), (4, 8)]
     
     while True:
         sample, timestamp = inlet.pull_sample(timeout=0.1)
@@ -50,16 +48,24 @@ def stream_muse_ratios(duration=5, verbose=True):
                     DataFilter.detrend(data_to_filter, DetrendOperations.CONSTANT.value)
                     DataFilter.perform_bandpass(data_to_filter, int(srate), low_freq, high_freq, 4, FilterTypes.BUTTERWORTH.value, 0)
                     band_buffers[idx][-1] = data_to_filter[-1]
-                # Calculate ratios using the most recent data (last 50 samples)
-                beta_power = calculate_band_power(band_buffers[2][-50:])
-                theta_power = calculate_band_power(band_buffers[3][-50:])
-                alpha_power = calculate_band_power(band_buffers[1][-50:])
+                # Calculate beta/theta ratio using the most recent data (last 50 samples)
+                beta_power = calculate_band_power(band_buffers[1][-50:])
+                theta_power = calculate_band_power(band_buffers[2][-50:])
                 beta_theta_ratio = beta_power / (theta_power + 1e-10)
-                beta_alpha_theta_ratio = beta_power / (alpha_power + theta_power + 1e-10)
-                yield (beta_theta_ratio, beta_alpha_theta_ratio)
+                
+                # Check for NaN values and return focused status
+                if np.isnan(beta_theta_ratio):
+                    if verbose:
+                        print("NaN detected in stream data - returning focused status")
+                    # Return a default focused value (you can adjust these values)
+                    yield 1.0  # Default focused ratio
+                else:
+                    yield beta_theta_ratio
             except Exception as e:
                 if verbose:
                     print(f"Filtering error: {e}")
+                # Return focused status on error
+                yield 1.0
         else:
             if verbose:
                 print("No data received - Check connection", end='\r')
@@ -73,7 +79,7 @@ def record_ratios_to_df(record_time, start_time=0, verbose=True):
         start_time (float): Time in seconds from program start to begin recording.
         verbose (bool): Print status messages.
     Returns:
-        pd.DataFrame: DataFrame with columns ['timestamp', 'beta_theta_ratio', 'beta_alpha_theta_ratio']
+        pd.DataFrame: DataFrame with columns ['timestamp', 'beta_theta_ratio']
     """
     import time
     data = []
@@ -88,28 +94,27 @@ def record_ratios_to_df(record_time, start_time=0, verbose=True):
     gen = stream_muse_ratios(verbose=verbose)
     record_start = time.time()
     while time.time() - record_start < record_time:
-        ratio1, ratio2 = next(gen)
+        ratio = next(gen)
         now = time.time() - start_program  # relative timestamp
-        data.append([now, ratio1, ratio2])
+        data.append([now, ratio])
     if verbose:
         print(f"Recording complete. Collected {len(data)} samples.")
-    df = pd.DataFrame(data, columns=['timestamp', 'beta_theta_ratio', 'beta_alpha_theta_ratio'])
+    df = pd.DataFrame(data, columns=['timestamp', 'beta_theta_ratio'])
     return df
 
 def get_channel_means(df):
     """
-    Calculate the mean values for each ratio channel from a recorded DataFrame.
+    Calculate the mean values for the beta/theta ratio from a recorded DataFrame.
     Args:
-        df (pd.DataFrame): DataFrame with columns ['timestamp', 'beta_theta_ratio', 'beta_alpha_theta_ratio']
+        df (pd.DataFrame): DataFrame with columns ['timestamp', 'beta_theta_ratio']
     Returns:
-        dict: Dictionary with mean values for each channel
+        dict: Dictionary with mean values for the channel
     """
     if df.empty:
         return None
     
     means = {
-        'beta_theta_ratio': df['beta_theta_ratio'].mean(),
-        'beta_alpha_theta_ratio': df['beta_alpha_theta_ratio'].mean()
+        'beta_theta_ratio': df['beta_theta_ratio'].mean()
     }
     return means
 
@@ -128,7 +133,7 @@ def sliding_window_analysis(data_buffer, thresholds, window_size=10, sample_rate
     """
     Analyze the sliding window for focus status changes.
     Args:
-        data_buffer: Deque containing (timestamp, ratio1, ratio2) tuples
+        data_buffer: Deque containing (timestamp, ratio) tuples
         thresholds: Dictionary with threshold values including focus and unfocus thresholds
         window_size: Window size in seconds
         sample_rate: Sample rate in Hz
@@ -146,40 +151,41 @@ def sliding_window_analysis(data_buffer, thresholds, window_size=10, sample_rate
         return {'focus_status': 'unknown', 'details': 'No recent data'}
     
     # Calculate means for the window
-    ratio1_values = [item[1] for item in recent_data]
-    ratio2_values = [item[2] for item in recent_data]
+    ratio_values = [item[1] for item in recent_data]
     
-    window_mean_ratio1 = np.mean(ratio1_values)
-    window_mean_ratio2 = np.mean(ratio2_values)
+    window_mean_ratio = np.mean(ratio_values)
     
-    # Check focus status using both thresholds
+    # Check for NaN values and return focused status
+    if np.isnan(window_mean_ratio):
+        return {
+            'focus_status': 'focused', 
+            'details': {
+                'window_mean_ratio': window_mean_ratio,
+                'reason': 'NaN detected in data - returning focused status',
+                'window_samples': len(recent_data)
+            }
+        }
+    
+    # Check focus status using thresholds
     # Out of focus: below baseline * 0.6
     # Back to focus: above baseline * 0.85
-    ratio1_out_of_focus = window_mean_ratio1 < thresholds['beta_theta_ratio_unfocus']
-    ratio2_out_of_focus = window_mean_ratio2 < thresholds['beta_alpha_theta_ratio_unfocus']
-    
-    ratio1_back_to_focus = window_mean_ratio1 >= thresholds['beta_theta_ratio_focus']
-    ratio2_back_to_focus = window_mean_ratio2 >= thresholds['beta_alpha_theta_ratio_focus']
+    ratio_out_of_focus = window_mean_ratio < thresholds['beta_theta_ratio_unfocus']
+    ratio_back_to_focus = window_mean_ratio >= thresholds['beta_theta_ratio_focus']
     
     # Determine focus status
-    if ratio1_out_of_focus or ratio2_out_of_focus:
+    if ratio_out_of_focus:
         focus_status = 'out_of_focus'
-    elif ratio1_back_to_focus and ratio2_back_to_focus:
+    elif ratio_back_to_focus:
         focus_status = 'focused'
     else:
         focus_status = 'transitioning'  # Between thresholds
     
     details = {
-        'window_mean_ratio1': window_mean_ratio1,
-        'window_mean_ratio2': window_mean_ratio2,
-        'ratio1_unfocus_threshold': thresholds['beta_theta_ratio_unfocus'],
-        'ratio2_unfocus_threshold': thresholds['beta_alpha_theta_ratio_unfocus'],
-        'ratio1_focus_threshold': thresholds['beta_theta_ratio_focus'],
-        'ratio2_focus_threshold': thresholds['beta_alpha_theta_ratio_focus'],
-        'ratio1_out_of_focus': ratio1_out_of_focus,
-        'ratio2_out_of_focus': ratio2_out_of_focus,
-        'ratio1_back_to_focus': ratio1_back_to_focus,
-        'ratio2_back_to_focus': ratio2_back_to_focus,
+        'window_mean_ratio': window_mean_ratio,
+        'ratio_unfocus_threshold': thresholds['beta_theta_ratio_unfocus'],
+        'ratio_focus_threshold': thresholds['beta_theta_ratio_focus'],
+        'ratio_out_of_focus': ratio_out_of_focus,
+        'ratio_back_to_focus': ratio_back_to_focus,
         'window_samples': len(recent_data)
     }
     
@@ -196,25 +202,24 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
         record_start_time (float): Time in seconds from program start to begin recording
         continue_plotting (bool): Whether to continue plotting after recording is complete
     Returns:
-        dict: Dictionary with mean values for each channel, or None if no recording was done
+        dict: Dictionary with mean values for the channel, or None if no recording was done
     """
     # Set up plotting
     duration = 5  # seconds of buffer for plotting
     buffer_len = int(duration * 256)  # Default srate
     times = np.linspace(-duration, 0, buffer_len)
-    ratio1_buffer = np.zeros(buffer_len)
-    ratio2_buffer = np.zeros(buffer_len)
+    ratio_buffer = np.zeros(buffer_len)
 
     plt.ion()
     fig, ax = plt.subplots(1, 1, figsize=(12, 4))  # Single plot for better performance
     fig.suptitle('Muse EEG Focus Monitoring - Beta/Theta Ratio with Dual Thresholds', fontsize=16)
 
-    # Main ratio plot (only Beta/Theta for performance)
-    line1, = ax.plot(times, ratio1_buffer, label='Beta/Theta Ratio', color='blue')
+    # Main ratio plot
+    line, = ax.plot(times, ratio_buffer, label='Beta/Theta Ratio', color='blue')
     
-    # Pre-allocate threshold lines (more efficient than removing/adding)
-    threshold_line1, = ax.plot([], [], color='red', linestyle='--', alpha=0.7, label='Unfocus Threshold (0.6x)')
-    threshold_line2, = ax.plot([], [], color='green', linestyle='--', alpha=0.7, label='Focus Threshold (0.85x)')
+    # Pre-allocate threshold lines with proper initial data
+    threshold_line1, = ax.plot(times, np.zeros_like(times), color='red', linestyle='--', alpha=0.7, label='Unfocus Threshold (0.6x)')
+    threshold_line2, = ax.plot(times, np.zeros_like(times), color='green', linestyle='--', alpha=0.7, label='Focus Threshold (0.85x)')
     
     # Set up plot formatting
     ax.set_ylabel('Beta/Theta Ratio')
@@ -258,9 +263,13 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
         
         while time.time() - record_start < record_duration:
             try:
-                ratio1, ratio2 = next(gen)
+                ratio = next(gen)
+                # Check for NaN values and skip them during recording
+                if np.isnan(ratio):
+                    print("NaN detected during recording - skipping sample")
+                    continue
                 now = time.time() - start_program
-                recorded_data.append([now, ratio1, ratio2])
+                recorded_data.append([now, ratio])
             except Exception as e:
                 print(f"Recording error: {e}")
                 break
@@ -270,26 +279,23 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
         
         # Calculate and print means
         if recorded_data:
-            df = pd.DataFrame(recorded_data, columns=['timestamp', 'beta_theta_ratio', 'beta_alpha_theta_ratio'])
+            df = pd.DataFrame(recorded_data, columns=['timestamp', 'beta_theta_ratio'])
             recording_means = get_channel_means(df)
             print(f"\nRecording Results:")
             print(f"Beta/Theta ratio mean: {recording_means['beta_theta_ratio']:.4f}")
-            print(f"Beta/(Alpha+Theta) ratio mean: {recording_means['beta_alpha_theta_ratio']:.4f}")
             print(f"Total samples recorded: {len(df)}")
 
             thresholds = {
                 'beta_theta_ratio_unfocus': recording_means['beta_theta_ratio'] * 0.6,
-                'beta_alpha_theta_ratio_unfocus': recording_means['beta_alpha_theta_ratio'] * 0.6,
-                'beta_theta_ratio_focus': recording_means['beta_theta_ratio'] * 0.85,
-                'beta_alpha_theta_ratio_focus': recording_means['beta_alpha_theta_ratio'] * 0.85
+                'beta_theta_ratio_focus': recording_means['beta_theta_ratio'] * 0.85
             }
-            print(f"Unfocus thresholds (0.6x): Beta/Theta: {thresholds['beta_theta_ratio_unfocus']:.4f}, Beta/(Alpha+Theta): {thresholds['beta_alpha_theta_ratio_unfocus']:.4f}")
-            print(f"Focus thresholds (0.85x): Beta/Theta: {thresholds['beta_theta_ratio_focus']:.4f}, Beta/(Alpha+Theta): {thresholds['beta_alpha_theta_ratio_focus']:.4f}")
+            print(f"Unfocus threshold (0.6x): Beta/Theta: {thresholds['beta_theta_ratio_unfocus']:.4f}")
+            print(f"Focus threshold (0.85x): Beta/Theta: {thresholds['beta_theta_ratio_focus']:.4f}")
             
             # Update threshold lines once when calculated
             if thresholds is not None:
-                threshold_line1.set_data([times[0], times[-1]], [thresholds['beta_theta_ratio_unfocus'], thresholds['beta_theta_ratio_unfocus']])
-                threshold_line2.set_data([times[0], times[-1]], [thresholds['beta_theta_ratio_focus'], thresholds['beta_theta_ratio_focus']])
+                threshold_line1.set_data(times, thresholds['beta_theta_ratio_unfocus'] * np.ones_like(times))
+                threshold_line2.set_data(times, thresholds['beta_theta_ratio_focus'] * np.ones_like(times))
 
     # Start recording thread if duration > 0
     if record_duration > 0:
@@ -300,18 +306,30 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
     gen = stream_muse_ratios(verbose=False)
     
     try:
-        for ratio1, ratio2 in gen:
+        for ratio in gen:
             current_time = time.time()
             
-            # Add data to sliding window
-            sliding_window_data.append((current_time, ratio1, ratio2))
+            # Check for NaN values in the stream data
+            if np.isnan(ratio):
+                # Set focus status to focused when NaN is detected
+                if focus_status != 'focused':
+                    focus_status = 'focused'
+                    print(f"\n✅ FOCUSED STATUS (NaN detected) at {current_time:.1f}s")
+                    # Visual feedback: Green background
+                    ax.set_facecolor('lightgreen')
+                    background_color_changed = True
+                # Skip adding NaN data to the buffer
+                continue
             
-            # Roll buffers and update (only for the plot we're showing)
-            ratio1_buffer = np.roll(ratio1_buffer, -1)
-            ratio1_buffer[-1] = ratio1
+            # Add data to sliding window
+            sliding_window_data.append((current_time, ratio))
+            
+            # Roll buffers and update
+            ratio_buffer = np.roll(ratio_buffer, -1)
+            ratio_buffer[-1] = ratio
             
             # Update plot line (lightweight operation)
-            line1.set_ydata(ratio1_buffer)
+            line.set_ydata(ratio_buffer)
             
             # Sliding window analysis (heavy operation - only every 5 seconds)
             if current_time - last_analysis_time >= analysis_interval and thresholds is not None:
@@ -324,9 +342,8 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
                         focus_status = 'out_of_focus'
                         details = analysis_result['details']
                         print(f"\n🚨 OUT OF FOCUS DETECTED at {current_time:.1f}s")
-                        print(f"   Beta/Theta: {details['window_mean_ratio1']:.4f} (unfocus threshold: {details['ratio1_unfocus_threshold']:.4f})")
-                        print(f"   Beta/(Alpha+Theta): {details['window_mean_ratio2']:.4f} (unfocus threshold: {details['ratio2_unfocus_threshold']:.4f})")
-                        print(f"   Ratio1 out of focus: {details['ratio1_out_of_focus']}, Ratio2 out of focus: {details['ratio2_out_of_focus']}")
+                        print(f"   Beta/Theta: {details['window_mean_ratio']:.4f} (unfocus threshold: {details['ratio_unfocus_threshold']:.4f})")
+                        print(f"   Ratio out of focus: {details['ratio_out_of_focus']}")
                         
                         # Visual feedback: Red background
                         ax.set_facecolor('lightcoral')
@@ -336,9 +353,8 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
                         focus_status = 'focused'
                         details = analysis_result['details']
                         print(f"\n✅ BACK TO FOCUS at {current_time:.1f}s")
-                        print(f"   Beta/Theta: {details['window_mean_ratio1']:.4f} (focus threshold: {details['ratio1_focus_threshold']:.4f})")
-                        print(f"   Beta/(Alpha+Theta): {details['window_mean_ratio2']:.4f} (focus threshold: {details['ratio2_focus_threshold']:.4f})")
-                        print(f"   Ratio1 back to focus: {details['ratio1_back_to_focus']}, Ratio2 back to focus: {details['ratio2_back_to_focus']}")
+                        print(f"   Beta/Theta: {details['window_mean_ratio']:.4f} (focus threshold: {details['ratio_focus_threshold']:.4f})")
+                        print(f"   Ratio back to focus: {details['ratio_back_to_focus']}")
                         
                         # Visual feedback: Green background
                         ax.set_facecolor('lightgreen')
@@ -348,8 +364,7 @@ def main(record_duration=30, record_start_time=2, continue_plotting=True):
                         focus_status = 'transitioning'
                         details = analysis_result['details']
                         print(f"\n🔄 TRANSITIONING at {current_time:.1f}s")
-                        print(f"   Beta/Theta: {details['window_mean_ratio1']:.4f} (between thresholds)")
-                        print(f"   Beta/(Alpha+Theta): {details['window_mean_ratio2']:.4f} (between thresholds)")
+                        print(f"   Beta/Theta: {details['window_mean_ratio']:.4f} (between thresholds)")
                         
                         # Visual feedback: Yellow background
                         ax.set_facecolor('lightyellow')
@@ -402,7 +417,7 @@ def start_focus_monitoring(record_duration=30, record_start_time=2, continue_plo
         continue_plotting (bool): Whether to continue plotting after recording is complete
     
     Returns:
-        dict: Dictionary with baseline mean values for each channel, or None if no recording was done
+        dict: Dictionary with baseline mean values for the channel, or None if no recording was done
     
     Focus Status Logic:
     - If ratio drops below baseline * 0.6 -> 'out_of_focus'

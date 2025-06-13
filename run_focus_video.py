@@ -4,14 +4,18 @@ import random
 import cv2
 import numpy as np
 import pygame
+import time
 
-from concentration import get_focus_status, start_focus_monitoring
+import concentration
 from volume_change import volume_boost
 from brightness import flicker_brightness
 
+import logging, random
+logger = logging.getLogger(__name__)
+
 # Video path
-VIDEO_PATH = "./assets/How to Speak So That People Want to Listen _ Julian Treasure _ TED_short.mp4"
-AUDIO_PATH = "./assets/audio.mp3"
+VIDEO_PATH = "./hyperFocus/assets/How to Speak So That People Want to Listen _ Julian Treasure _ TED_short.mp4"
+AUDIO_PATH = "./hyperFocus/assets/audio.mp3"
 
 # Globals
 segments = []
@@ -75,14 +79,23 @@ def show_summary_screen():
 
 def monitor_focus():
     global active_segment, segments, frame_number
+    color= (0, 255, 0) #default color
     while frame_number < video_frame_count:
-        time.sleep(5)
-        status = get_focus_status()
+        time.sleep(1)
+        status = concentration.get_focus_status()
         if status == 'focused':
             color = (0, 255, 0)
         elif status == 'out_of_focus':
             color = (0, 0, 255)
-            random.choice([volume_boost, flicker_brightness])()
+            #random.choice([volume_boost, flicker_brightness])()
+            # 1. Pick the nudge but don’t run it yet
+            action = random.choice([volume_boost, flicker_brightness])
+
+            # 2. Log what we chose (use the function’s __name__ for readability)
+            print(f"[NUDGE] Selected: {action.__name__}")
+
+            # 3. Execute the nudge
+            action()
         else:
             continue
 
@@ -130,6 +143,8 @@ def play_video():
 
 # Launch focus tracking and video playback
 if __name__ == "__main__":
-    threading.Thread(target=start_focus_monitoring, kwargs={'continue_plotting': False}, daemon=True).start()
+    ready = threading.Event()
+    threading.Thread(target=concentration.main, daemon=True).start()
     threading.Thread(target=monitor_focus, daemon=True).start()
+    ready.wait(timeout=30)
     play_video()

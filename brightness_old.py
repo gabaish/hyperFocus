@@ -1,15 +1,45 @@
 import tkinter as tk
 import threading
 import time
-import screen_brightness_control as sbc
+import subprocess
+
+def get_brightness():
+    """Get current brightness using PowerShell WMI"""
+    try:
+        result = subprocess.run([
+            'powershell', 
+            'Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness | Select-Object -ExpandProperty CurrentBrightness'
+        ], capture_output=True, text=True, shell=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip())
+    except:
+        pass
+    return None
+
+def set_brightness(brightness):
+    """Set brightness using PowerShell WMI"""
+    try:
+        subprocess.run([
+            'powershell',
+            f'(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, {brightness})'
+        ], shell=True)
+        return True
+    except:
+        return False
 
 def flicker_brightness():
     try:
-        original = sbc.get_brightness(display=0)[0]
-        for _ in range(5):
-            sbc.set_brightness(20)    # Dim quickly
+        original = get_brightness()
+        if original is None:
+            print("Could not get current brightness, using default value")
+            original = 50  # Default to 50%
+        
+        print(f"Original brightness: {original}%")
+        
+        for _ in range(3):
+            set_brightness(20)    # Dim quickly
             time.sleep(0.2)
-            sbc.set_brightness(original)  # Restore
+            set_brightness(original)  # Restore
             time.sleep(0.2)
     except Exception as e:
         print("Error adjusting brightness:", e)
